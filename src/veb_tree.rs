@@ -16,7 +16,6 @@ pub(crate) struct Node<'a, K: Clone + Ord, V: Clone> {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LeafType<'a, K: Clone + Ord, V: Clone> {
     key_value: Option<(&'a K, V)>,
-    id: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -44,7 +43,7 @@ where
 
     #[inline]
     // Set the key for this node as the maximum key of the left and right children.
-    // return whether the key is changed or not.
+    // Return whether the key is changed or not.
     fn set_branch_key(&mut self) -> bool {
         if let NodeType::Branch(branch) = &mut self.node_type {
             let mut input_key = unsafe { (*branch.right).get_key() };
@@ -116,10 +115,7 @@ where
         nodes.push(Node {
             parent: null_mut(),
             // Temporally set it to None which might be changed later.
-            node_type: NodeType::Leaf(LeafType {
-                key_value: None,
-                id: 0,
-            }),
+            node_type: NodeType::Leaf(LeafType { key_value: None }),
         });
         leaves.push(nodes.last_mut().unwrap());
         return *leaves.last().unwrap();
@@ -163,15 +159,6 @@ where
         let mut nodes = Vec::with_capacity((1 << height) - 1);
         let mut leaves = Vec::with_capacity(1 << (height - 1));
         let root = make_tree(height, &mut leaves, &mut nodes);
-        // set up leaf id so that we know the index of each leaf.
-        for (i, &leaf) in leaves.iter().enumerate() {
-            unsafe {
-                match &mut (*leaf).node_type {
-                    NodeType::Branch(_) => panic!("Should never reach here"),
-                    NodeType::Leaf(leaf_type) => leaf_type.id = i,
-                }
-            }
-        }
         Self {
             height,
             nodes,
@@ -258,19 +245,6 @@ mod veb_tree {
         }
     }
 
-    fn verify_leaf_ids<K, V>(leaves: &Vec<*mut Node<K, V>>)
-    where
-        K: Ord + Clone,
-        V: Clone,
-    {
-        leaves.iter().enumerate().for_each(|(i, &leaf)| unsafe {
-            match &mut (*leaf).node_type {
-                NodeType::Branch(_) => panic!("Should never reach here"),
-                NodeType::Leaf(leaf_type) => assert_eq!(leaf_type.id, i),
-            }
-        });
-    }
-
     // The excatly tree was shown by the paper.
     // https://ibb.co/BtmrpDz
     #[test]
@@ -321,9 +295,6 @@ mod veb_tree {
             &mut positions,
             &mut node_types,
         );
-
-        verify_leaf_ids(&tree.leaves);
-
         assert_eq!(
             positions,
             [
@@ -377,38 +348,14 @@ mod veb_tree {
                     })
                 ),
                 vec!(
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 0
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 1
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 2
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 3
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 4
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 5
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 6
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 7
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                 )
             ]
         );
@@ -416,11 +363,9 @@ mod veb_tree {
         unsafe {
             (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&333, 3)),
-                id: 3,
             });
             (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&444, 4)),
-                id: 4,
             });
         }
 
@@ -468,38 +413,18 @@ mod veb_tree {
                     })
                 ),
                 vec!(
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 0
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 1
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 2
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&333, 3)),
-                        id: 3
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&444, 4)),
-                        id: 4
                     }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 5
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 6
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 7
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                 )
             ]
         );
@@ -507,11 +432,9 @@ mod veb_tree {
         unsafe {
             (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&222, 2)),
-                id: 2,
             });
             (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&555, 5)),
-                id: 5,
             });
         }
 
@@ -559,38 +482,22 @@ mod veb_tree {
                     })
                 ),
                 vec!(
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 0
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 1
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&222, 2)),
-                        id: 2
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&333, 3)),
-                        id: 3
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&444, 4)),
-                        id: 4
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&555, 5)),
-                        id: 5
                     }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 6
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 7
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                 )
             ]
         );
@@ -598,31 +505,20 @@ mod veb_tree {
         unsafe {
             (*tree.leaves[0]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&0, 0)),
-                id: 0,
             });
             (*tree.leaves[1]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&1, 1)),
-                id: 1,
             });
             (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&2, 2)),
-                id: 2,
             });
             (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&3, 3)),
-                id: 3,
             });
-            (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType {
-                key_value: None,
-                id: 4,
-            });
-            (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType {
-                key_value: None,
-                id: 5,
-            });
+            (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType { key_value: None });
+            (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType { key_value: None });
             (*tree.leaves[6]).node_type = NodeType::Leaf(LeafType {
                 key_value: Some((&666, 6)),
-                id: 6,
             });
         }
 
@@ -672,36 +568,22 @@ mod veb_tree {
                 vec!(
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&0, 0)),
-                        id: 0
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&1, 1)),
-                        id: 1
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&2, 2)),
-                        id: 2
                     }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&3, 3)),
-                        id: 3
                     }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 4
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 5
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
                         key_value: Some((&666, 6)),
-                        id: 6
                     }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: None,
-                        id: 7
-                    }),
+                    &NodeType::Leaf(LeafType { key_value: None }),
                 )
             ]
         );
