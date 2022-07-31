@@ -180,6 +180,7 @@ where
         }
     }
 
+    // Populated the changed leaves to root.
     fn update_values(&self, changed_leaves: &[*mut Node<'a, K, V>]) {
         let mut nodes = Vec::new();
         changed_leaves.iter().for_each(|&node| unsafe {
@@ -704,5 +705,11 @@ mod veb_tree {
                 )
             ]
         );
+        assert_eq!(tree.nodes[0].get_key(), Some(&666));
+        assert_eq!(tree.nodes[7].get_key(), Some(&2));
+        assert_eq!(tree.nodes[9].get_key(), None);
+        assert_eq!(tree.nodes[10].get_key(), None);
+        assert_eq!(tree.nodes[12].get_key(), Some(&666));
+        assert_eq!(tree.nodes[14].get_key(), None);
     }
 }
