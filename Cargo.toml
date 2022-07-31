@@ -1,11 +1,10 @@
 [package]
-name = "stream-db"
-version = "0.1.2"
+name = "cache-oblivious-btree-map"
+version = "0.0.1"
 edition = "2021"
 description = "Cache oblivious BTreeMap."
 license = "Apache-2.0"
 repository = "https://github.com/cpcs/cache-oblivious-btree"
-keywords = ["cryptocurrency", "quantitative", "trading"]
 
 [dependencies]
 once_cell = "1"
