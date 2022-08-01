@@ -2,23 +2,24 @@
 
 use std::ptr::null_mut;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NodeType<'a, K: Clone + Ord, V: Clone> {
     Branch(BranchType<'a, K, V>),
     Leaf(LeafType<'a, K, V>),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Node<'a, K: Clone + Ord, V: Clone> {
-    node_type: NodeType<'a, K, V>,
-    parent: *mut Node<'a, K, V>,
+    pub(crate) node_type: NodeType<'a, K, V>,
+    pub(crate) parent: *mut Node<'a, K, V>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LeafType<'a, K: Clone + Ord, V: Clone> {
-    key_value: Option<(&'a K, V)>,
+    pub(crate) key_value: Option<(&'a K, V)>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchType<'a, K: Clone + Ord, V: Clone> {
     key: Option<&'a K>,
     left: *mut Node<'a, K, V>,
@@ -30,6 +31,22 @@ where
     K: Clone + Ord,
     V: Clone + 'a,
 {
+    #[inline]
+    pub(crate) fn get_leaf_key_value_ref(&self) -> &Option<(&K, V)> {
+        match &self.node_type {
+            NodeType::Branch(_) => panic!("Shouldn't call this for non leaf node."),
+            NodeType::Leaf(leaf) => &leaf.key_value,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get_leaf_key_value_mut_ref(&mut self) -> &'a mut Option<(&K, V)> {
+        match &mut self.node_type {
+            NodeType::Branch(_) => panic!("Shouldn't call this for non leaf node."),
+            NodeType::Leaf(leaf) => &mut leaf.key_value,
+        }
+    }
+
     #[inline]
     fn get_key(&self) -> Option<&K> {
         match &self.node_type {
