@@ -191,7 +191,7 @@ where
                             nodes.push((*nodes[i]).parent)
                         }
                     }
-                    NodeType::Leaf(_) => panic!("Should not reach hear"),
+                    NodeType::Leaf(_) => panic!("Should not reach here"),
                 }
             }
             i += 1;
