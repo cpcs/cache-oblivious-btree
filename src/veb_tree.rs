@@ -16,7 +16,7 @@ pub(crate) struct Node<'a, K: Clone + Ord, V: Clone> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LeafType<'a, K: Clone + Ord, V: Clone> {
-    pub(crate) key_value: Option<(&'a K, V)>,
+    pub(crate) key_value: Option<&'a (K, V)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,22 +31,6 @@ where
     K: Clone + Ord,
     V: Clone + 'a,
 {
-    #[inline]
-    pub(crate) fn get_leaf_key_value_ref(&self) -> &Option<(&K, V)> {
-        match &self.node_type {
-            NodeType::Branch(_) => panic!("Shouldn't call this for non leaf node."),
-            NodeType::Leaf(leaf) => &leaf.key_value,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn get_leaf_key_value_mut_ref(&mut self) -> &'a mut Option<(&K, V)> {
-        match &mut self.node_type {
-            NodeType::Branch(_) => panic!("Shouldn't call this for non leaf node."),
-            NodeType::Leaf(leaf) => &mut leaf.key_value,
-        }
-    }
-
     #[inline]
     fn get_key(&self) -> Option<&K> {
         match &self.node_type {
@@ -379,10 +363,10 @@ mod veb_tree {
 
         unsafe {
             (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&333, 3)),
+                key_value: Some(&(333, 3)),
             });
             (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&444, 4)),
+                key_value: Some(&(444, 4)),
             });
         }
 
@@ -434,10 +418,10 @@ mod veb_tree {
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&333, 3)),
+                        key_value: Some(&(333, 3)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&444, 4)),
+                        key_value: Some(&(444, 4)),
                     }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType { key_value: None }),
@@ -448,10 +432,10 @@ mod veb_tree {
 
         unsafe {
             (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&222, 2)),
+                key_value: Some(&(222, 2)),
             });
             (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&555, 5)),
+                key_value: Some(&(555, 5)),
             });
         }
 
@@ -502,16 +486,16 @@ mod veb_tree {
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&222, 2)),
+                        key_value: Some(&(222, 2)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&333, 3)),
+                        key_value: Some(&(333, 3)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&444, 4)),
+                        key_value: Some(&(444, 4)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&555, 5)),
+                        key_value: Some(&(555, 5)),
                     }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType { key_value: None }),
@@ -521,21 +505,21 @@ mod veb_tree {
 
         unsafe {
             (*tree.leaves[0]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&0, 0)),
+                key_value: Some(&(0, 0)),
             });
             (*tree.leaves[1]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&1, 1)),
+                key_value: Some(&(1, 1)),
             });
             (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&2, 2)),
+                key_value: Some(&(2, 2)),
             });
             (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&3, 3)),
+                key_value: Some(&(3, 3)),
             });
             (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType { key_value: None });
             (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType { key_value: None });
             (*tree.leaves[6]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some((&666, 6)),
+                key_value: Some(&(666, 6)),
             });
         }
 
@@ -584,21 +568,21 @@ mod veb_tree {
                 ),
                 vec!(
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&0, 0)),
+                        key_value: Some(&(0, 0)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&1, 1)),
+                        key_value: Some(&(1, 1)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&2, 2)),
+                        key_value: Some(&(2, 2)),
                     }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&3, 3)),
+                        key_value: Some(&(3, 3)),
                     }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                     &NodeType::Leaf(LeafType {
-                        key_value: Some((&666, 6)),
+                        key_value: Some(&(666, 6)),
                     }),
                     &NodeType::Leaf(LeafType { key_value: None }),
                 )
