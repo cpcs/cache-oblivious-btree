@@ -1,9 +1,7 @@
 #![allow(dead_code)]
 
-use crate::veb_tree::Node;
-
 pub(crate) struct Segment<'a, K: Clone + Ord, V: Clone> {
-    data: &'a [*mut Node<'a, K, V>],
+    data: &'a [*mut Option<(K, V)>],
     count: usize,
 }
 
@@ -13,17 +11,21 @@ where
     V: Clone,
 {
     #[inline]
-    fn new(data: &'a [*mut Node<'a, K, V>], count: Option<usize>) -> Segment<'a, K, V> {
+    pub(crate) fn new(data: &'a [*mut Option<(K, V)>], count: Option<usize>) -> Segment<'a, K, V> {
         Self {
             data,
-            count: match count {
-                Some(c) => c,
-                None => data
-                    .iter()
-                    .filter(|&&v| unsafe { (*v).get_leaf_key_value_ref().is_some() })
-                    .count(),
+            count: unsafe {
+                match count {
+                    Some(c) => c,
+                    None => data.iter().filter(|&&v| (*v).is_some()).count(),
+                }
             },
         }
+    }
+
+    #[inline]
+    pub(crate) fn get_count(&self) -> usize {
+        self.count
     }
 
     #[inline]
@@ -32,26 +34,24 @@ where
             return;
         }
         unsafe {
-            let src_key_value = (*self.data[src]).get_leaf_key_value_mut_ref();
-            *(*self.data[dst]).get_leaf_key_value_mut_ref() = src_key_value.take();
+            *self.data[dst] = (*self.data[src]).take();
         }
     }
 
     #[inline]
     fn move_key_value_if_src_not_none(&self, src: usize, dst: usize) -> bool {
         unsafe {
-            let src_key_value = (*self.data[src]).get_leaf_key_value_mut_ref();
-            if src_key_value.is_none() {
+            if (*self.data[src]).is_none() {
                 return false;
             }
             if src != dst {
-                *(*self.data[dst]).get_leaf_key_value_mut_ref() = src_key_value.take();
+                *self.data[dst] = (*self.data[src]).take();
             }
         }
         true
     }
 
-    fn move_all_key_values_to_front(&self) {
+    pub(crate) fn move_all_key_values_to_front(&self) {
         if self.count == 0 {
             return;
         }
@@ -67,16 +67,22 @@ where
     }
 
     // Evenly distribut the data.
-    fn shuffle_key_values(&self) {
+    pub(crate) fn shuffle_key_values(&self, need_to_move_to_front: bool) {
         if self.count == 0 {
             return;
         }
-        self.move_all_key_values_to_front();
+        if need_to_move_to_front {
+            self.move_all_key_values_to_front();
+        }
         let sub_len = self.data.len() / self.count;
         let remainer = self.data.len() % self.count;
         let mut j = self.data.len() - 1;
         for i in (0..self.count).rev() {
             self.move_key_value(i, j);
+            if j < sub_len {
+                assert!(i == 0);
+                break;
+            }
             j -= sub_len;
             if i < remainer && j > 0 {
                 j -= 1;
@@ -84,13 +90,12 @@ where
         }
     }
 
-    fn set_key_value(&mut self, index: usize, key_value: (&'a K, V)) {
+    fn set_key_value(&mut self, index: usize, key_value: (K, V)) {
         unsafe {
-            let kv = (*self.data[index]).get_leaf_key_value_mut_ref();
-            assert!(kv.is_none());
-            *kv = Some(key_value);
-            self.count += 1;
+            assert!((*self.data[index]).is_none());
+            *self.data[index] = Some(key_value);
         }
+        self.count += 1;
     }
 
     // Try inserting a value on index.
@@ -99,11 +104,11 @@ where
     // Note: it's possible to have position == data.len() to insert
     // a value after the right-most one, in this case, exisiting values
     // may only be moved left.
-    fn insert_key_value(&mut self, position: usize, key_value: (&'a K, V)) {
+    pub(crate) fn insert_key_value(&mut self, position: usize, key_value: (K, V)) {
         // Insert on index, try moving right first (possible no moving).
         for i in position..self.data.len() {
             unsafe {
-                if (*self.data[i]).get_leaf_key_value_ref().is_none() {
+                if (*self.data[i]).is_none() {
                     for j in (position..i).rev() {
                         self.move_key_value(j, j + 1);
                     }
@@ -115,7 +120,7 @@ where
         // Try inserting on position - 1, move other values to left.
         for i in (0..position).rev() {
             unsafe {
-                if (*self.data[i]).get_leaf_key_value_ref().is_none() {
+                if (*self.data[i]).is_none() {
                     for j in i + 1..position {
                         self.move_key_value(j, j - 1);
                     }
@@ -128,10 +133,10 @@ where
     }
 
     #[inline]
-    fn remove_key_value(&mut self, index: usize) {
+    pub(crate) fn remove_key_value(&mut self, index: usize) {
         unsafe {
-            let key_value = (*self.data[index]).get_leaf_key_value_mut_ref().take();
-            if key_value.is_some() {
+            if (*self.data[index]).is_some() {
+                *self.data[index] = None;
                 self.count -= 1;
             }
         }
@@ -141,464 +146,138 @@ where
 #[cfg(test)]
 mod segment {
     use super::Segment;
-    use crate::veb_tree::{LeafType, Node, NodeType};
-    use std::ptr::null_mut;
 
     #[test]
     fn test_operations() {
-        let mut nodes: Vec<Node<usize, usize>> = vec![
-            Node {
-                parent: null_mut(),
-                node_type: NodeType::Leaf(LeafType { key_value: None }),
-            };
-            5
-        ];
-
-        let data = nodes
+        let mut v: Vec<Option<(usize, usize)>> = vec![None; 5];
+        let data = v
             .iter_mut()
-            .map(|node| node as *mut Node<usize, usize>)
-            .collect::<Vec<*mut Node<usize, usize>>>();
+            .map(|v| v as *mut Option<(usize, usize)>)
+            .collect::<Vec<*mut Option<(usize, usize)>>>();
         let mut s = Segment::new(&data, None);
-        assert_eq!(s.count, 0);
+        assert_eq!(s.get_count(), 0);
 
-        s.insert_key_value(3, (&11, 1111));
+        s.insert_key_value(3, (11, 1111));
+        assert_eq!(v, [None, None, None, Some((11, 1111)), None]);
+        assert_eq!(s.get_count(), 1);
+
+        s.insert_key_value(2, (8, 888));
+        assert_eq!(v, [None, None, Some((8, 888)), Some((11, 1111)), None]);
+        assert_eq!(s.get_count(), 2);
+
+        s.insert_key_value(3, (10, 1010));
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
+                None,
+                None,
+                Some((8, 888)),
+                Some((10, 1010)),
+                Some((11, 1111)),
             ]
         );
-        assert_eq!(s.count, 1);
+        assert_eq!(s.get_count(), 3);
 
-        s.insert_key_value(2, (&8, 888));
+        s.insert_key_value(3, (9, 999));
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&8, 888))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
+                None,
+                Some((8, 888)),
+                Some((9, 999)),
+                Some((10, 1010)),
+                Some((11, 1111))
             ]
         );
-        assert_eq!(s.count, 2);
+        assert_eq!(s.get_count(), 4);
 
-        s.insert_key_value(3, (&10, 1010));
+        s.insert_key_value(5, (12, 1212));
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&8, 888))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&10, 1010))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
+                Some((8, 888)),
+                Some((9, 999)),
+                Some((10, 1010)),
+                Some((11, 1111)),
+                Some((12, 1212)),
             ]
         );
-        assert_eq!(s.count, 3);
-
-        s.insert_key_value(3, (&9, 999));
-        assert_eq!(
-            nodes,
-            [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&8, 888))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&10, 1010))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-            ]
-        );
-        assert_eq!(s.count, 4);
-
-        s.insert_key_value(5, (&12, 1212));
-        assert_eq!(
-            nodes,
-            [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&8, 888))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&10, 1010))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-            ]
-        );
-        assert_eq!(s.count, 5);
 
         s.remove_key_value(0);
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&10, 1010))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
+                None,
+                Some((9, 999)),
+                Some((10, 1010)),
+                Some((11, 1111)),
+                Some((12, 1212)),
             ]
         );
-        assert_eq!(s.count, 4);
+        assert_eq!(s.get_count(), 4);
 
         s.remove_key_value(2);
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
+                None,
+                Some((9, 999)),
+                None,
+                Some((11, 1111)),
+                Some((12, 1212)),
             ]
         );
-        assert_eq!(s.count, 3);
+        assert_eq!(s.get_count(), 3);
 
-        s.insert_key_value(5, (&15, 1515));
+        s.insert_key_value(5, (15, 1515));
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&11, 1111))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&15, 1515))
-                    }),
-                },
+                None,
+                Some((9, 999)),
+                Some((11, 1111)),
+                Some((12, 1212)),
+                Some((15, 1515)),
             ]
         );
-        assert_eq!(s.count, 4);
+        assert_eq!(s.get_count(), 4);
 
         s.remove_key_value(2);
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&15, 1515))
-                    }),
-                },
+                None,
+                Some((9, 999)),
+                None,
+                Some((12, 1212)),
+                Some((15, 1515)),
             ]
         );
-        assert_eq!(s.count, 3);
+        assert_eq!(s.get_count(), 3);
 
-        s.shuffle_key_values();
+        s.shuffle_key_values(true);
         assert_eq!(
-            nodes,
+            v,
             [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&15, 1515))
-                    }),
-                },
+                None,
+                Some((9, 999)),
+                None,
+                Some((12, 1212)),
+                Some((15, 1515)),
             ]
         );
-        assert_eq!(s.count, 3);
+        assert_eq!(s.get_count(), 3);
 
         s.remove_key_value(4);
-        assert_eq!(
-            nodes,
-            [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-            ]
-        );
-        assert_eq!(s.count, 2);
+        assert_eq!(v, [None, Some((9, 999)), None, Some((12, 1212)), None,]);
+        assert_eq!(s.get_count(), 2);
 
-        s.shuffle_key_values();
-        assert_eq!(
-            nodes,
-            [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-            ]
-        );
-        assert_eq!(s.count, 2);
+        s.shuffle_key_values(true);
+        assert_eq!(v, [None, None, Some((9, 999)), None, Some((12, 1212)),]);
+        assert_eq!(s.get_count(), 2);
 
         s.move_all_key_values_to_front();
-        assert_eq!(
-            nodes,
-            [
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&9, 999))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType {
-                        key_value: Some((&12, 1212))
-                    }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-                Node {
-                    parent: null_mut(),
-                    node_type: NodeType::Leaf(LeafType { key_value: None }),
-                },
-            ]
-        );
-        assert_eq!(s.count, 2);
+        assert_eq!(v, [Some((9, 999)), Some((12, 1212)), None, None, None,]);
+        assert_eq!(s.get_count(), 2);
     }
 }
