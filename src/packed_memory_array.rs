@@ -446,7 +446,7 @@ mod packed_memory_array {
                 .collect::<Vec<(usize, usize)>>();
             assert_eq!(v.len(), 9999 - i);
             for j in 1..v.len() {
-                assert!(v[j - 1].1 < v[j].1);
+                assert!(v[j - 1].0 < v[j].0);
             }
         }
         assert_eq!(pma.v.len(), 1);
