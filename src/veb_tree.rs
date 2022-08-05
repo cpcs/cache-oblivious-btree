@@ -165,7 +165,7 @@ where
 // https://erikdemaine.org/papers/CacheObliviousBTrees_SICOMP/paper.pdf
 // This is the cache oblivious version since by using this logic and if we put the tree nodes
 // into an array using the specific order, we may reduce the number of memory loading.
-pub(crate) struct VebTree<'a, K: Ord + Clone, V: Clone> {
+pub struct VebTree<'a, K: Ord + Clone, V: Clone> {
     height: usize,
     nodes: Vec<Node<'a, K, V>>,
     leaves: Vec<*mut Node<'a, K, V>>,
