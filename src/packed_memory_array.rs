@@ -29,6 +29,16 @@ where
     }
 
     #[inline]
+    pub(crate) fn data_len(&self) -> usize {
+        self.data.len()
+    }
+
+    #[inline]
+    pub(crate) fn get_key_values(&self) -> &[Option<(K, V)>] {
+        &self.v
+    }
+
+    #[inline]
     fn insert_density_ok(&self, depth: usize, count: usize, size: usize) -> bool {
         // (1 / 4) + 3 * (d / height) * 4 = (height * 3 + d) / (height * 4)
         Ratio::new_raw(count, size) <= Ratio::new_raw(self.height * 3 + depth, self.height << 2)
@@ -41,14 +51,27 @@ where
     }
 
     // 0 <= index <= data.len(), Note: index == num is special.
-    pub(crate) fn insert(&mut self, index: usize, key_value: (K, V)) -> Option<(usize, usize)> {
-        let segment_id =
-            (index >> self.segment_size_log2) - if self.data.len() == index { 1 } else { 0 };
-        let mut segment_pos = if self.data.len() == index {
-            self.segment_size
-        } else {
-            index & (self.segment_size - 1)
-        };
+    // Returns (Option<Value>, Option(Changed_from, changed_to))
+    // The first Option value is for the old value (if any).
+    // The 2nd Option is the range of leaf we need to update, None means the whole range.
+    pub(crate) fn insert(
+        &mut self,
+        index: usize,
+        key_value: (K, V),
+    ) -> (Option<V>, Option<(usize, usize)>) {
+        let mut segment_id = index >> self.segment_size_log2;
+        let mut segment_pos = index & (self.segment_size - 1);
+        if index == self.data_len() {
+            segment_id -= 1;
+            segment_pos = self.segment_size;
+        } else if let Some((key, _)) = &self.v[index] {
+            if key == &key_value.0 {
+                return (
+                    self.v[index].replace(key_value).map(|x| x.1),
+                    Some((index, index)),
+                );
+            }
+        }
         let mut from = segment_id << self.segment_size_log2;
         let mut to = from + self.segment_size;
         let mut size = self.segment_size;
@@ -91,7 +114,7 @@ where
             let mut segment = Segment::new(&self.data[from..to], Some(count - 1));
             segment.insert_key_value(segment_pos, key_value);
             segment.shuffle_key_values(true);
-            return Some((from, to));
+            return (None, Some((from, to)));
         }
         self.v.resize(size << 1, None);
         self.data = self
@@ -108,22 +131,25 @@ where
         let mut segment = Segment::new(&self.data, Some(count - 1));
         segment.insert_key_value(segment_pos, key_value);
         segment.shuffle_key_values(true);
-        None
+        (None, None)
     }
 
     // 0 <= index < data.len().
-    pub(crate) fn remove(&mut self, index: usize) -> Option<(usize, usize)> {
+    pub(crate) fn remove(&mut self, index: usize) -> (Option<V>, Option<(usize, usize)>) {
+        if self.v[index].is_none() {
+            return (None, None);
+        }
         let segment_id = index >> self.segment_size_log2;
         let segment_pos = index & (self.segment_size - 1);
         let mut from = self.segment_size * segment_id;
         let mut to = from + self.segment_size;
         let mut segment = Segment::new(&self.data[from..to], None);
-        segment.remove_key_value(segment_pos);
+        let old_value = segment.remove_key_value(segment_pos);
         let mut count = segment.get_count();
         let mut size = self.segment_size;
         if self.remove_density_ok(self.height - 1, count, size) {
             Segment::new(&self.data[from..to], Some(count)).shuffle_key_values(true);
-            return Some((from, to));
+            return (old_value, Some((from, to)));
         }
         for depth in (0..self.height - 1).rev() {
             if ((from / size) & 1) > 0 {
@@ -138,13 +164,13 @@ where
             size <<= 1;
             if self.remove_density_ok(depth, count, size) {
                 Segment::new(&self.data[from..to], Some(count)).shuffle_key_values(true);
-                return Some((from, to));
+                return (old_value, Some((from, to)));
             }
         }
         assert!(self.data.len() == size);
         if count == 0 {
             *self = Self::new();
-            return None;
+            return (old_value, None);
         }
         Segment::new(&self.data, Some(count)).move_all_key_values_to_front();
         self.v.resize(size >> 1, None);
@@ -160,7 +186,7 @@ where
         } else {
             self.height -= 1;
         }
-        None
+        (old_value, None)
     }
 }
 
@@ -176,19 +202,19 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 1);
         assert_eq!(pma.segment_size_log2, 0);
 
-        assert_eq!(pma.insert(1, (100, 10)), None);
+        assert_eq!(pma.insert(1, (100, 10)), (None, None));
         assert_eq!(pma.v, [None, Some((100, 10))]);
         assert_eq!(pma.height, 2);
         assert_eq!(pma.segment_size, 1);
         assert_eq!(pma.segment_size_log2, 0);
 
-        assert_eq!(pma.insert(2, (200, 22)), None);
+        assert_eq!(pma.insert(2, (200, 22)), (None, None));
         assert_eq!(pma.v, [None, Some((100, 10)), None, Some((200, 22))]);
         assert_eq!(pma.height, 2);
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.insert(3, (150, 11)), Some((0, 4)));
+        assert_eq!(pma.insert(3, (150, 11)), (None, Some((0, 4))));
         assert_eq!(
             pma.v,
             [None, Some((100, 10)), Some((150, 11)), Some((200, 22))]
@@ -197,7 +223,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.insert(0, (88, 8)), None);
+        assert_eq!(pma.insert(0, (88, 8)), (None, None));
         assert_eq!(
             pma.v,
             [
@@ -215,7 +241,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.insert(2, (99, 9)), Some((0, 4)));
+        assert_eq!(pma.insert(2, (99, 9)), (None, Some((0, 4))));
         assert_eq!(
             pma.v,
             [
@@ -233,7 +259,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.insert(8, (250, 25)), Some((4, 8)));
+        assert_eq!(pma.insert(8, (250, 25)), (None, Some((4, 8))));
         assert_eq!(
             pma.v,
             [
@@ -251,7 +277,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.insert(6, (166, 66)), None);
+        assert_eq!(pma.insert(6, (166, 66)), (None, None));
         assert_eq!(
             pma.v,
             [
@@ -277,7 +303,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 4);
         assert_eq!(pma.segment_size_log2, 2);
 
-        assert_eq!(pma.insert(13, (199, 19)), Some((12, 16)));
+        assert_eq!(pma.insert(13, (199, 19)), (None, Some((12, 16))));
         assert_eq!(
             pma.v,
             [
@@ -303,7 +329,34 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 4);
         assert_eq!(pma.segment_size_log2, 2);
 
-        assert_eq!(pma.remove(13), Some((12, 16)));
+        // Update existing.
+        assert_eq!(pma.insert(13, (199, 99)), (Some(19), Some((13, 13))));
+        assert_eq!(
+            pma.v,
+            [
+                None,
+                None,
+                Some((88, 8)),
+                None,
+                None,
+                Some((99, 9)),
+                None,
+                Some((100, 10)),
+                None,
+                Some((150, 11)),
+                None,
+                Some((166, 66)),
+                None,
+                Some((199, 99)),
+                Some((200, 22)),
+                Some((250, 25))
+            ]
+        );
+        assert_eq!(pma.height, 3);
+        assert_eq!(pma.segment_size, 4);
+        assert_eq!(pma.segment_size_log2, 2);
+
+        assert_eq!(pma.remove(13), (Some(99), Some((12, 16))));
         assert_eq!(
             pma.v,
             [
@@ -329,7 +382,34 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 4);
         assert_eq!(pma.segment_size_log2, 2);
 
-        assert_eq!(pma.remove(11), None);
+        // Remove non existed.
+        assert_eq!(pma.remove(14), (None, None));
+        assert_eq!(
+            pma.v,
+            [
+                None,
+                None,
+                Some((88, 8)),
+                None,
+                None,
+                Some((99, 9)),
+                None,
+                Some((100, 10)),
+                None,
+                Some((150, 11)),
+                None,
+                Some((166, 66)),
+                None,
+                Some((200, 22)),
+                None,
+                Some((250, 25))
+            ]
+        );
+        assert_eq!(pma.height, 3);
+        assert_eq!(pma.segment_size, 4);
+        assert_eq!(pma.segment_size_log2, 2);
+
+        assert_eq!(pma.remove(11), (Some(66), None));
         assert_eq!(
             pma.v,
             [
@@ -347,7 +427,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.remove(7), Some((6, 8)));
+        assert_eq!(pma.remove(7), (Some(25), Some((6, 8))));
         assert_eq!(
             pma.v,
             [
@@ -365,7 +445,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.remove(4), Some((4, 6)));
+        assert_eq!(pma.remove(4), (Some(10), Some((4, 6))));
         assert_eq!(
             pma.v,
             [
@@ -383,7 +463,7 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.remove(1), None);
+        assert_eq!(pma.remove(1), (Some(8), None));
         assert_eq!(
             pma.v,
             [None, Some((99, 9)), Some((150, 11)), Some((200, 22))]
@@ -392,19 +472,19 @@ mod packed_memory_array {
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.remove(1), Some((0, 4)));
+        assert_eq!(pma.remove(1), (Some(9), Some((0, 4))));
         assert_eq!(pma.v, [None, Some((150, 11)), None, Some((200, 22))]);
         assert_eq!(pma.height, 2);
         assert_eq!(pma.segment_size, 2);
         assert_eq!(pma.segment_size_log2, 1);
 
-        assert_eq!(pma.remove(3), None);
+        assert_eq!(pma.remove(3), (Some(22), None));
         assert_eq!(pma.v, [None, Some((150, 11))]);
         assert_eq!(pma.height, 2);
         assert_eq!(pma.segment_size, 1);
         assert_eq!(pma.segment_size_log2, 0);
 
-        assert_eq!(pma.remove(1), None);
+        assert_eq!(pma.remove(1), (Some(11), None));
         assert_eq!(pma.v, [None]);
         assert_eq!(pma.height, 1);
         assert_eq!(pma.segment_size, 1);

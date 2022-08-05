@@ -2,25 +2,27 @@
 
 use std::ptr::null_mut;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum NodeType<'a, K: Clone + Ord, V: Clone> {
+use crate::packed_memory_array::PackedMemoryArray;
+
+#[derive(Debug, Eq, PartialEq)]
+enum NodeType<'a, K: Clone + Ord, V: Clone> {
     Branch(BranchType<'a, K, V>),
-    Leaf(LeafType<'a, K, V>),
+    Leaf(LeafType<K>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Node<'a, K: Clone + Ord, V: Clone> {
-    pub(crate) node_type: NodeType<'a, K, V>,
-    pub(crate) parent: *mut Node<'a, K, V>,
+#[derive(Debug, Eq, PartialEq)]
+struct Node<'a, K: Clone + Ord, V: Clone> {
+    node_type: NodeType<'a, K, V>,
+    parent: *mut Node<'a, K, V>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LeafType<'a, K: Clone + Ord, V: Clone> {
-    pub(crate) key_value: Option<&'a (K, V)>,
+#[derive(Debug, Eq, PartialEq)]
+struct LeafType<K: Clone + Ord> {
+    key: Option<K>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchType<'a, K: Clone + Ord, V: Clone> {
+#[derive(Debug, Eq, PartialEq)]
+struct BranchType<'a, K: Clone + Ord, V: Clone> {
     key: Option<&'a K>,
     left: *mut Node<'a, K, V>,
     right: *mut Node<'a, K, V>,
@@ -35,11 +37,30 @@ where
     fn get_key(&self) -> Option<&K> {
         match &self.node_type {
             NodeType::Branch(branch) => branch.key,
-            NodeType::Leaf(leaf) => match leaf.key_value {
-                Some((key, _)) => Some(key),
-                None => None,
-            },
+            NodeType::Leaf(leaf) => leaf.key.as_ref(),
         }
+    }
+
+    #[inline]
+    // Set the key value for the leaf node. Note: The key should not be changed unless
+    // Returns whether the key changed.
+    fn set_leave_key(&mut self, key: Option<K>) -> bool {
+        let mut key_changed = true;
+        match &mut self.node_type {
+            NodeType::Branch(_) => panic!("Should only call this for leaf nodes."),
+            NodeType::Leaf(leaf) => {
+                if let Some(ref leaf_key) = leaf.key {
+                    if let Some(ref key) = key {
+                        key_changed = !key.eq(leaf_key);
+                    }
+                } else if key.is_none() {
+                    // Both are None.
+                    return false;
+                }
+                leaf.key = key;
+            }
+        }
+        key_changed
     }
 
     #[inline]
@@ -116,7 +137,7 @@ where
         nodes.push(Node {
             parent: null_mut(),
             // Temporally set it to None which might be changed later.
-            node_type: NodeType::Leaf(LeafType { key_value: None }),
+            node_type: NodeType::Leaf(LeafType { key: None }),
         });
         leaves.push(nodes.last_mut().unwrap());
         return *leaves.last().unwrap();
@@ -149,6 +170,8 @@ pub(crate) struct VebTree<'a, K: Ord + Clone, V: Clone> {
     nodes: Vec<Node<'a, K, V>>,
     leaves: Vec<*mut Node<'a, K, V>>,
     root: *mut Node<'a, K, V>,
+    pma: PackedMemoryArray<K, V>,
+    size: usize,
 }
 
 impl<'a, K, V> VebTree<'a, K, V>
@@ -156,40 +179,178 @@ where
     K: Ord + Clone,
     V: Clone + 'a,
 {
-    fn new(height: usize) -> Self {
-        let mut nodes = Vec::with_capacity((1 << height) - 1);
-        let mut leaves = Vec::with_capacity(1 << (height - 1));
-        let root = make_tree(height, &mut leaves, &mut nodes);
+    pub fn new() -> Self {
+        let mut nodes = Vec::with_capacity(1);
+        let mut leaves = Vec::with_capacity(1);
+        let root = make_tree(1, &mut leaves, &mut nodes);
         Self {
-            height,
+            height: 1,
             nodes,
             leaves,
             root,
+            pma: PackedMemoryArray::new(),
+            size: 0,
         }
     }
 
-    // Populated the changed leaves to root.
-    fn update_values(&self, changed_leaves: &[*mut Node<'a, K, V>]) {
-        let mut nodes = Vec::new();
-        changed_leaves.iter().for_each(|&node| unsafe {
-            if !(*node).parent.is_null()
-                && (nodes.is_empty()
-                    || *nodes.last().unwrap() as *const Node<'a, K, V> != (*node).parent)
-            {
-                nodes.push((*node).parent);
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let (old_value, changed_range) = self.pma.insert(self.find_index(&key), (key, value));
+        if old_value.is_none() {
+            self.size += 1;
+        }
+        match changed_range {
+            Some((from, to)) => self.populate_changes(from, to),
+            None => self.rebuild(),
+        }
+        old_value
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let index = self.find_index(key);
+        if index >= self.leaves.len() {
+            None
+        } else {
+            unsafe {
+                match (*self.leaves[index]).get_key() {
+                    Some(k) => {
+                        if !k.eq(key) {
+                            return None;
+                        }
+                    }
+                    None => return None,
+                }
             }
-        });
+            let (old_value, changed_range) = self.pma.remove(index);
+            if old_value.is_some() {
+                self.size -= 1;
+                match changed_range {
+                    Some((from, to)) => self.populate_changes(from, to),
+                    None => self.rebuild(),
+                }
+            }
+            old_value
+        }
+    }
+
+    pub fn get_top_k_key_values(&self, k: usize) -> Vec<(&K, &V)> {
+        self.pma
+            .get_key_values()
+            .iter()
+            .filter_map(|kv| kv.as_ref())
+            .map(|kv| (&kv.0, &kv.1))
+            .take(k)
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    pub fn get_first_key(&self) -> Option<&K> {
+        self.pma
+            .get_key_values()
+            .iter()
+            .filter_map(|kv| kv.as_ref())
+            .map(|kv| &kv.0)
+            .next()
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let index = self.find_index(key);
+        if index >= self.leaves.len() {
+            return None;
+        }
+        match &self.pma.get_key_values()[index] {
+            None => None,
+            Some((k, v)) => {
+                if key.eq(k) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub(crate) fn get_all_key_values(&self) -> Vec<(&K, &V)> {
+        self.pma
+            .get_key_values()
+            .iter()
+            .filter_map(|kv| kv.as_ref())
+            .map(|kv| (&kv.0, &kv.1))
+            .collect()
+    }
+
+    fn rebuild(&mut self) {
+        self.nodes = Vec::with_capacity(self.pma.data_len() << 1);
+        self.leaves = Vec::with_capacity(self.pma.data_len());
+        self.height = (self.pma.data_len().trailing_zeros() + 1) as usize;
+        self.root = make_tree(self.height, &mut self.leaves, &mut self.nodes);
+        self.populate_changes(0, self.pma.data_len());
+    }
+
+    fn find_index(&self, key: &K) -> usize {
+        let mut cur = self.root as *const Node<K, V>;
+        let mut index = 0usize;
+        unsafe {
+            while let NodeType::Branch(branch) = &(*cur).node_type {
+                index <<= 1;
+                cur = match (*branch.left).get_key() {
+                    Some(k) => {
+                        if k.ge(key) {
+                            branch.left
+                        } else {
+                            index |= 1;
+                            branch.right
+                        }
+                    }
+                    None => {
+                        index |= 1;
+                        branch.right
+                    }
+                }
+            }
+        }
+        assert!(cur == self.leaves[index]);
+        unsafe {
+            if let Some(k) = (*cur).get_key() {
+                if k.lt(key) {
+                    // This Key is the largest.
+                    index += 1;
+                }
+            }
+        }
+        index
+    }
+
+    // Populated the changed leaves to root.
+    fn populate_changes(&self, from: usize, to: usize) {
+        let key_values = self.pma.get_key_values();
+        let mut changed_nodes = Vec::with_capacity(self.nodes.len());
+        for (i, key_value) in key_values.iter().enumerate().take(to).skip(from) {
+            let node = self.leaves[i];
+            unsafe {
+                (*node).set_leave_key(key_value.as_ref().map(|kv| kv.0.clone()));
+                if !(*node).parent.is_null()
+                    && (changed_nodes.is_empty()
+                        || *changed_nodes.last().unwrap() as *const Node<K, V> != (*node).parent)
+                {
+                    changed_nodes.push((*node).parent);
+                }
+            }
+        }
 
         let mut i = 0;
-        while i < nodes.len() {
+        while i < changed_nodes.len() {
             unsafe {
-                match (*nodes[i]).node_type {
+                match (*changed_nodes[i]).node_type {
                     NodeType::Branch(_) => {
-                        if (*nodes[i]).set_branch_key()
-                            && !(*nodes[i]).parent.is_null()
-                            && *nodes.last().unwrap() as *const Node<K, V> != (*nodes[i]).parent
+                        if (*changed_nodes[i]).set_branch_key()
+                            && !(*changed_nodes[i]).parent.is_null()
+                            && *changed_nodes.last().unwrap() as *const Node<K, V>
+                                != (*changed_nodes[i]).parent
                         {
-                            nodes.push((*nodes[i]).parent)
+                            changed_nodes.push((*changed_nodes[i]).parent)
                         }
                     }
                     NodeType::Leaf(_) => panic!("Should not reach here"),
@@ -202,8 +363,8 @@ where
 
 #[cfg(test)]
 mod veb_tree {
-    use super::{Node, NodeType, VebTree};
-    use crate::veb_tree::{BranchType, LeafType};
+    use super::{make_tree, BranchType, LeafType, Node, NodeType, VebTree};
+    use rand::{seq::SliceRandom, thread_rng};
     use std::ptr::null_mut;
 
     // Traverse the tree by layer.
@@ -216,7 +377,7 @@ mod veb_tree {
         node_types: &mut Vec<Vec<&NodeType<'a, K, V>>>,
     ) where
         K: Ord + Clone,
-        V: Clone + 'a,
+        V: Clone,
     {
         if cur.is_null() {
             return;
@@ -249,22 +410,17 @@ mod veb_tree {
     // The excatly tree was shown by the paper.
     // https://ibb.co/BtmrpDz
     #[test]
-    fn test_create_tree_height5() {
-        let tree = VebTree::<usize, usize>::new(5);
-        assert_eq!(tree.height, 5);
-        assert_eq!(tree.leaves.len(), 16);
-        assert_eq!(tree.nodes.len(), 31);
+    fn test_create_tree() {
+        let mut nodes = Vec::with_capacity(31);
+        let mut leaves = Vec::with_capacity(16);
+        let root = make_tree::<usize, usize>(5, &mut leaves, &mut nodes);
+
+        assert_eq!(leaves.len(), 16);
+        assert_eq!(nodes.len(), 31);
 
         let mut positions = vec![Vec::new(); 5];
         let mut node_types = vec![Vec::new(); 5];
-        traverse(
-            0,
-            tree.root,
-            null_mut(),
-            &tree.nodes,
-            &mut positions,
-            &mut node_types,
-        );
+        traverse(0, root, null_mut(), &nodes, &mut positions, &mut node_types);
 
         assert_eq!(
             positions,
@@ -276,323 +432,351 @@ mod veb_tree {
                 vec!(5, 6, 8, 9, 11, 12, 14, 15, 20, 21, 23, 24, 26, 27, 29, 30),
             ]
         );
-    }
-
-    // The tree was shown in a lecture video (https://ibb.co/wpspK71)
-    #[test]
-    fn test_update_height4() {
-        let mut tree = VebTree::<usize, usize>::new(4);
-        assert_eq!(tree.height, 4);
-        assert_eq!(tree.leaves.len(), 8);
-        assert_eq!(tree.nodes.len(), 15);
-
-        let mut positions = vec![Vec::new(); 4];
-        let mut node_types = vec![Vec::new(); 4];
-        traverse(
-            0,
-            tree.root,
-            null_mut(),
-            &tree.nodes,
-            &mut positions,
-            &mut node_types,
-        );
-        assert_eq!(
-            positions,
-            [
-                vec!(0),
-                vec!(1, 2),
-                vec!(3, 6, 9, 12),
-                vec!(4, 5, 7, 8, 10, 11, 13, 14),
-            ]
-        );
 
         assert_eq!(
             node_types,
             [
                 vec!(&NodeType::Branch(BranchType {
                     key: None,
-                    left: &mut tree.nodes[1],
-                    right: &mut tree.nodes[2],
+                    left: &mut nodes[1],
+                    right: &mut nodes[16],
                 })),
                 vec!(
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[3],
-                        right: &mut tree.nodes[6],
+                        left: &mut nodes[2],
+                        right: &mut nodes[3],
                     }),
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[9],
-                        right: &mut tree.nodes[12],
+                        left: &mut nodes[17],
+                        right: &mut nodes[18],
                     })
                 ),
                 vec!(
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[4],
-                        right: &mut tree.nodes[5],
+                        left: &mut nodes[4],
+                        right: &mut nodes[7],
                     }),
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[7],
-                        right: &mut tree.nodes[8],
+                        left: &mut nodes[10],
+                        right: &mut nodes[13],
                     }),
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[10],
-                        right: &mut tree.nodes[11],
+                        left: &mut nodes[19],
+                        right: &mut nodes[22],
                     }),
                     &NodeType::Branch(BranchType {
                         key: None,
-                        left: &mut tree.nodes[13],
-                        right: &mut tree.nodes[14],
+                        left: &mut nodes[25],
+                        right: &mut nodes[28],
                     })
                 ),
                 vec!(
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[5],
+                        right: &mut nodes[6],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[8],
+                        right: &mut nodes[9],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[11],
+                        right: &mut nodes[12],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[14],
+                        right: &mut nodes[15],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[20],
+                        right: &mut nodes[21],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[23],
+                        right: &mut nodes[24],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[26],
+                        right: &mut nodes[27],
+                    }),
+                    &NodeType::Branch(BranchType {
+                        key: None,
+                        left: &mut nodes[29],
+                        right: &mut nodes[30],
+                    })
+                ),
+                vec!(
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
+                    &NodeType::Leaf(LeafType { key: None }),
                 )
             ]
         );
+    }
 
-        unsafe {
-            (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(333, 3)),
-            });
-            (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(444, 4)),
-            });
-        }
+    #[test]
+    fn test_opertions() {
+        let mut tree = VebTree::<usize, usize>::new();
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.get_all_key_values(), []);
 
-        tree.update_values(&tree.leaves[3..5]);
+        assert_eq!(tree.insert(1, 11), None);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.get_all_key_values(), [(&1, &11)]);
+
+        assert_eq!(tree.insert(3, 33), None);
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get_all_key_values(), [(&1, &11), (&3, &33)]);
+
+        assert_eq!(tree.insert(0, 0), None);
+        assert_eq!(tree.len(), 3);
+        assert_eq!(tree.get_all_key_values(), [(&0, &0), (&1, &11), (&3, &33)]);
+
+        assert_eq!(tree.insert(5, 555), None);
+        assert_eq!(tree.len(), 4);
         assert_eq!(
-            node_types,
-            [
-                vec!(&NodeType::Branch(BranchType {
-                    key: Some(&444),
-                    left: &mut tree.nodes[1],
-                    right: &mut tree.nodes[2],
-                })),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: Some(&333),
-                        left: &mut tree.nodes[3],
-                        right: &mut tree.nodes[6],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&444),
-                        left: &mut tree.nodes[9],
-                        right: &mut tree.nodes[12],
-                    })
-                ),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: None,
-                        left: &mut tree.nodes[4],
-                        right: &mut tree.nodes[5],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&333),
-                        left: &mut tree.nodes[7],
-                        right: &mut tree.nodes[8],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&444),
-                        left: &mut tree.nodes[10],
-                        right: &mut tree.nodes[11],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: None,
-                        left: &mut tree.nodes[13],
-                        right: &mut tree.nodes[14],
-                    })
-                ),
-                vec!(
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(333, 3)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(444, 4)),
-                    }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                )
-            ]
+            tree.get_all_key_values(),
+            [(&0, &0), (&1, &11), (&3, &33), (&5, &555)]
         );
 
-        unsafe {
-            (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(222, 2)),
-            });
-            (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(555, 5)),
-            });
-        }
-
-        tree.update_values(&tree.leaves[2..6]);
+        assert_eq!(tree.insert(2, 2222), None);
+        assert_eq!(tree.len(), 5);
         assert_eq!(
-            node_types,
-            [
-                vec!(&NodeType::Branch(BranchType {
-                    key: Some(&555),
-                    left: &mut tree.nodes[1],
-                    right: &mut tree.nodes[2],
-                })),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: Some(&333),
-                        left: &mut tree.nodes[3],
-                        right: &mut tree.nodes[6],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&555),
-                        left: &mut tree.nodes[9],
-                        right: &mut tree.nodes[12],
-                    })
-                ),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: None,
-                        left: &mut tree.nodes[4],
-                        right: &mut tree.nodes[5],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&333),
-                        left: &mut tree.nodes[7],
-                        right: &mut tree.nodes[8],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&555),
-                        left: &mut tree.nodes[10],
-                        right: &mut tree.nodes[11],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: None,
-                        left: &mut tree.nodes[13],
-                        right: &mut tree.nodes[14],
-                    })
-                ),
-                vec!(
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(222, 2)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(333, 3)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(444, 4)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(555, 5)),
-                    }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                )
-            ]
+            tree.get_all_key_values(),
+            [(&0, &0), (&1, &11), (&2, &2222), (&3, &33), (&5, &555)]
         );
 
-        unsafe {
-            (*tree.leaves[0]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(0, 0)),
-            });
-            (*tree.leaves[1]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(1, 1)),
-            });
-            (*tree.leaves[2]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(2, 2)),
-            });
-            (*tree.leaves[3]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(3, 3)),
-            });
-            (*tree.leaves[4]).node_type = NodeType::Leaf(LeafType { key_value: None });
-            (*tree.leaves[5]).node_type = NodeType::Leaf(LeafType { key_value: None });
-            (*tree.leaves[6]).node_type = NodeType::Leaf(LeafType {
-                key_value: Some(&(666, 6)),
-            });
-        }
-
-        tree.update_values(&tree.leaves);
+        assert_eq!(tree.insert(1, 1000), Some(11));
+        assert_eq!(tree.len(), 5);
         assert_eq!(
-            node_types,
+            tree.get_all_key_values(),
+            [(&0, &0), (&1, &1000), (&2, &2222), (&3, &33), (&5, &555)]
+        );
+
+        assert_eq!(tree.insert(4, 44444), None);
+        assert_eq!(tree.len(), 6);
+        assert_eq!(
+            tree.get_all_key_values(),
             [
-                vec!(&NodeType::Branch(BranchType {
-                    key: Some(&666),
-                    left: &mut tree.nodes[1],
-                    right: &mut tree.nodes[2],
-                })),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: Some(&3),
-                        left: &mut tree.nodes[3],
-                        right: &mut tree.nodes[6],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&666),
-                        left: &mut tree.nodes[9],
-                        right: &mut tree.nodes[12],
-                    })
-                ),
-                vec!(
-                    &NodeType::Branch(BranchType {
-                        key: Some(&1),
-                        left: &mut tree.nodes[4],
-                        right: &mut tree.nodes[5],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&3),
-                        left: &mut tree.nodes[7],
-                        right: &mut tree.nodes[8],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: None,
-                        left: &mut tree.nodes[10],
-                        right: &mut tree.nodes[11],
-                    }),
-                    &NodeType::Branch(BranchType {
-                        key: Some(&666),
-                        left: &mut tree.nodes[13],
-                        right: &mut tree.nodes[14],
-                    })
-                ),
-                vec!(
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(0, 0)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(1, 1)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(2, 2)),
-                    }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(3, 3)),
-                    }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                    &NodeType::Leaf(LeafType {
-                        key_value: Some(&(666, 6)),
-                    }),
-                    &NodeType::Leaf(LeafType { key_value: None }),
-                )
+                (&0, &0),
+                (&1, &1000),
+                (&2, &2222),
+                (&3, &33),
+                (&4, &44444),
+                (&5, &555)
             ]
         );
-        assert_eq!(tree.nodes[0].get_key(), Some(&666));
-        assert_eq!(tree.nodes[7].get_key(), Some(&2));
-        assert_eq!(tree.nodes[9].get_key(), None);
-        assert_eq!(tree.nodes[10].get_key(), None);
-        assert_eq!(tree.nodes[12].get_key(), Some(&666));
-        assert_eq!(tree.nodes[14].get_key(), None);
+
+        assert_eq!(tree.insert(0, 44444), Some(0));
+        assert_eq!(tree.len(), 6);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [
+                (&0, &44444),
+                (&1, &1000),
+                (&2, &2222),
+                (&3, &33),
+                (&4, &44444),
+                (&5, &555)
+            ]
+        );
+
+        assert_eq!(tree.remove(&0), Some(44444));
+        assert_eq!(tree.len(), 5);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [
+                (&1, &1000),
+                (&2, &2222),
+                (&3, &33),
+                (&4, &44444),
+                (&5, &555)
+            ]
+        );
+
+        assert_eq!(tree.remove(&0), None);
+        assert_eq!(tree.len(), 5);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [
+                (&1, &1000),
+                (&2, &2222),
+                (&3, &33),
+                (&4, &44444),
+                (&5, &555)
+            ]
+        );
+
+        assert_eq!(tree.remove(&4), Some(44444));
+        assert_eq!(tree.len(), 4);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&1, &1000), (&2, &2222), (&3, &33), (&5, &555)]
+        );
+
+        assert_eq!(tree.remove(&4), None);
+        assert_eq!(tree.len(), 4);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&1, &1000), (&2, &2222), (&3, &33), (&5, &555)]
+        );
+
+        assert_eq!(tree.insert(4, 44), None);
+        assert_eq!(tree.len(), 5);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&1, &1000), (&2, &2222), (&3, &33), (&4, &44), (&5, &555)]
+        );
+
+        assert_eq!(tree.insert(5, 55), Some(555));
+        assert_eq!(tree.len(), 5);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&1, &1000), (&2, &2222), (&3, &33), (&4, &44), (&5, &55)]
+        );
+
+        assert_eq!(tree.remove(&1), Some(1000));
+        assert_eq!(tree.len(), 4);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &33), (&4, &44), (&5, &55)]
+        );
+
+        assert_eq!(tree.remove(&5), Some(55));
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &33), (&4, &44)]
+        );
+
+        assert_eq!(tree.remove(&6), None);
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &33), (&4, &44)]
+        );
+
+        assert_eq!(tree.get(&3), Some(&33));
+        assert_eq!(tree.get(&2), Some(&2222));
+        assert_eq!(tree.get(&100), None);
+
+        assert_eq!(tree.get_top_k_key_values(1), [(&2, &2222)]);
+        assert_eq!(tree.get_top_k_key_values(2), [(&2, &2222), (&3, &33)]);
+        assert_eq!(
+            tree.get_top_k_key_values(3),
+            [(&2, &2222), (&3, &33), (&4, &44)]
+        );
+        assert_eq!(
+            tree.get_top_k_key_values(4),
+            [(&2, &2222), (&3, &33), (&4, &44)]
+        );
+
+        assert_eq!(tree.remove(&3), Some(33));
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get_all_key_values(), [(&2, &2222), (&4, &44)]);
+
+        assert_eq!(tree.insert(3, 33), None);
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &33), (&4, &44)]
+        );
+
+        assert_eq!(tree.insert(3, 66), Some(33));
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &66), (&4, &44)]
+        );
+
+        assert_eq!(tree.remove(&5), None);
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree.get_all_key_values(),
+            [(&2, &2222), (&3, &66), (&4, &44)]
+        );
+
+        assert_eq!(tree.remove(&4), Some(44));
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get_all_key_values(), [(&2, &2222), (&3, &66)]);
+        assert_eq!(tree.get_top_k_key_values(1), [(&2, &2222)]);
+
+        assert_eq!(tree.insert(3, 123), Some(66));
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get_all_key_values(), [(&2, &2222), (&3, &123)]);
+
+        assert_eq!(tree.insert(2, 321), Some(2222));
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get_all_key_values(), [(&2, &321), (&3, &123)]);
+        assert_eq!(tree.get_top_k_key_values(1), [(&2, &321)]);
+
+        assert_eq!(tree.remove(&3), Some(123));
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.get_all_key_values(), [(&2, &321)]);
+
+        assert_eq!(tree.remove(&3), None);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.get_all_key_values(), [(&2, &321)]);
+        assert_eq!(tree.get_top_k_key_values(1), [(&2, &321)]);
+
+        assert_eq!(tree.remove(&2), Some(321));
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.get_all_key_values(), []);
+
+        assert_eq!(tree.remove(&2), None);
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.get_all_key_values(), []);
+    }
+
+    #[test]
+    fn sanity_test() {
+        let mut numbers: Vec<usize> = (0..10000).collect();
+        numbers.shuffle(&mut thread_rng());
+        let mut tree = VebTree::<usize, usize>::new();
+        let mut s = std::collections::BTreeSet::<usize>::new();
+        numbers.iter().for_each(|&v| {
+            assert_eq!(tree.insert(v, v), None);
+            s.insert(v);
+            assert_eq!(
+                tree.get_all_key_values(),
+                s.iter().map(|v| (v, v)).collect::<Vec<(&usize, &usize)>>()
+            );
+            assert_eq!(tree.len(), s.len());
+        });
+        numbers.shuffle(&mut thread_rng());
+        numbers.iter().for_each(|&v| {
+            assert_eq!(tree.remove(&v), Some(v));
+            s.remove(&v);
+            assert_eq!(
+                tree.get_all_key_values(),
+                s.iter().map(|v| (v, v)).collect::<Vec<(&usize, &usize)>>()
+            );
+            assert_eq!(tree.len(), s.len());
+        });
     }
 }
