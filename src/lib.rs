@@ -1,3 +1,4 @@
+pub use cache_oblivious::
 mod packed_memory_array;
 mod segment;
-pub mod veb_tree;
+mod veb_tree;
