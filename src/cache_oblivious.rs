@@ -165,7 +165,7 @@ where
 // https://erikdemaine.org/papers/CacheObliviousBTrees_SICOMP/paper.pdf
 // This is the cache oblivious version since by using this logic and if we put the tree nodes
 // into an array using the specific order, we may reduce the number of memory loading.
-pub struct VebTree<'a, K: Ord + Clone, V: Clone> {
+pub struct BTreeMap<'a, K: Ord + Clone, V: Clone> {
     height: usize,
     nodes: Vec<Node<'a, K, V>>,
     leaves: Vec<*mut Node<'a, K, V>>,
@@ -174,7 +174,17 @@ pub struct VebTree<'a, K: Ord + Clone, V: Clone> {
     size: usize,
 }
 
-impl<'a, K, V> VebTree<'a, K, V>
+impl<'a, K, V> Default for BTreeMap<'a, K, V>
+where
+    K: Ord + Clone,
+    V: Clone + 'a,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a, K, V> BTreeMap<'a, K, V>
 where
     K: Ord + Clone,
     V: Clone + 'a,
@@ -191,6 +201,10 @@ where
             pma: PackedMemoryArray::new(),
             size: 0,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -363,7 +377,7 @@ where
 
 #[cfg(test)]
 mod veb_tree {
-    use super::{make_tree, BranchType, LeafType, Node, NodeType, VebTree};
+    use super::{make_tree, BTreeMap, BranchType, LeafType, Node, NodeType};
     use rand::{seq::SliceRandom, thread_rng};
     use std::ptr::null_mut;
 
@@ -541,7 +555,7 @@ mod veb_tree {
 
     #[test]
     fn test_opertions() {
-        let mut tree = VebTree::<usize, usize>::new();
+        let mut tree = BTreeMap::<usize, usize>::new();
         assert_eq!(tree.len(), 0);
         assert_eq!(tree.get_all_key_values(), []);
 
@@ -757,7 +771,7 @@ mod veb_tree {
     fn sanity_test() {
         let mut numbers: Vec<usize> = (0..10000).collect();
         numbers.shuffle(&mut thread_rng());
-        let mut tree = VebTree::<usize, usize>::new();
+        let mut tree = BTreeMap::<usize, usize>::new();
         let mut s = std::collections::BTreeSet::<usize>::new();
         numbers.iter().for_each(|&v| {
             assert_eq!(tree.insert(v, v), None);
