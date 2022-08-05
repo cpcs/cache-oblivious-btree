@@ -1,6 +1,6 @@
 [package]
 name = "cache-oblivious-btree-map"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Cache oblivious BTreeMap."
 license = "Apache-2.0"
