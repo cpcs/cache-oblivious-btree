@@ -133,11 +133,13 @@ where
     }
 
     #[inline]
-    pub(crate) fn remove_key_value(&mut self, index: usize) {
+    pub(crate) fn remove_key_value(&mut self, index: usize) -> Option<V> {
         unsafe {
             if (*self.data[index]).is_some() {
-                *self.data[index] = None;
                 self.count -= 1;
+                (*self.data[index]).take().map(|kv| kv.1)
+            } else {
+                None
             }
         }
     }
@@ -203,7 +205,7 @@ mod segment {
             ]
         );
 
-        s.remove_key_value(0);
+        assert_eq!(s.remove_key_value(0), Some(888));
         assert_eq!(
             v,
             [
@@ -216,7 +218,7 @@ mod segment {
         );
         assert_eq!(s.get_count(), 4);
 
-        s.remove_key_value(2);
+        assert_eq!(s.remove_key_value(2), Some(1010));
         assert_eq!(
             v,
             [
@@ -242,7 +244,21 @@ mod segment {
         );
         assert_eq!(s.get_count(), 4);
 
-        s.remove_key_value(2);
+        assert_eq!(s.remove_key_value(2), Some(1111));
+        assert_eq!(
+            v,
+            [
+                None,
+                Some((9, 999)),
+                None,
+                Some((12, 1212)),
+                Some((15, 1515)),
+            ]
+        );
+        assert_eq!(s.get_count(), 3);
+
+        // Remove non existing.
+        assert_eq!(s.remove_key_value(2), None);
         assert_eq!(
             v,
             [
@@ -268,7 +284,7 @@ mod segment {
         );
         assert_eq!(s.get_count(), 3);
 
-        s.remove_key_value(4);
+        assert_eq!(s.remove_key_value(4), Some(1515));
         assert_eq!(v, [None, Some((9, 999)), None, Some((12, 1212)), None,]);
         assert_eq!(s.get_count(), 2);
 
