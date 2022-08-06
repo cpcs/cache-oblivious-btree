@@ -286,7 +286,7 @@ where
         }
     }
 
-    pub(crate) fn get_all_key_values(&self) -> Vec<(&K, &V)> {
+    pub fn get_all_key_values(&self) -> Vec<(&K, &V)> {
         self.pma
             .get_key_values()
             .iter()
