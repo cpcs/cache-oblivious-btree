@@ -264,7 +264,7 @@ where
         *self = Self::new();
     }
 
-    pub fn keys(&self) -> Vec<&K> {
+    pub fn key_vec(&self) -> Vec<&K> {
         self.pma
             .get_key_values()
             .iter()
@@ -273,7 +273,7 @@ where
             .collect::<Vec<&K>>()
     }
 
-    pub fn values(&self) -> Vec<&V> {
+    pub fn value_vec(&self) -> Vec<&V> {
         self.pma
             .get_key_values()
             .iter()
