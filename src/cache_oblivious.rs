@@ -260,6 +260,28 @@ where
         self.size
     }
 
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn keys(&self) -> Vec<&K> {
+        self.pma
+            .get_key_values()
+            .iter()
+            .filter_map(|kv| kv.as_ref())
+            .map(|kv| &kv.0)
+            .collect::<Vec<&K>>()
+    }
+
+    pub fn values(&self) -> Vec<&V> {
+        self.pma
+            .get_key_values()
+            .iter()
+            .filter_map(|kv| kv.as_ref())
+            .map(|kv| &kv.1)
+            .collect::<Vec<&V>>()
+    }
+
     pub fn get_first_key(&self) -> Option<&K> {
         self.pma
             .get_key_values()
