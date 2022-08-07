@@ -44,7 +44,7 @@ where
     #[inline]
     // Set the key value for the leaf node. Note: The key should not be changed unless
     // Returns whether the key changed.
-    fn set_leave_key(&mut self, key: Option<K>) -> bool {
+    fn set_leaf_key(&mut self, key: Option<K>) -> bool {
         let mut key_changed = true;
         match &mut self.node_type {
             NodeType::Branch(_) => panic!("Should only call this for leaf nodes."),
@@ -76,8 +76,12 @@ where
             match branch.key {
                 Some(k) => match input_key {
                     Some(ik) => {
-                        branch.key = Some(ik);
-                        !k.eq(ik)
+                        if !ik.eq(k) {
+                            branch.key = Some(ik);
+                            true
+                        } else {
+                            false
+                        }
                     }
                     None => {
                         branch.key = None;
@@ -90,10 +94,7 @@ where
                         branch.key = Some(ik);
                         true
                     }
-                    None => {
-                        branch.key = None;
-                        false
-                    }
+                    None => false,
                 },
             }
         } else {
@@ -366,7 +367,7 @@ where
         for (i, key_value) in key_values.iter().enumerate().take(to).skip(from) {
             let node = self.leaves[i];
             unsafe {
-                (*node).set_leave_key(key_value.as_ref().map(|kv| kv.0.clone()));
+                (*node).set_leaf_key(key_value.as_ref().map(|kv| kv.0.clone()));
                 if !(*node).parent.is_null()
                     && (changed_nodes.is_empty()
                         || *changed_nodes.last().unwrap() as *const Node<K, V> != (*node).parent)
