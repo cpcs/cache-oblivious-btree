@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 
-use std::ptr::null_mut;
+use std::{fmt::Debug, ptr::null_mut};
 
 use crate::packed_memory_array::PackedMemoryArray;
 
 #[derive(Debug, Eq, PartialEq)]
-enum NodeType<'a, K: Clone + Ord, V: Clone> {
+enum NodeType<'a, K: Clone + Ord, V: Clone + Debug> {
     Branch(BranchType<'a, K, V>),
     Leaf(LeafType<K>),
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct Node<'a, K: Clone + Ord, V: Clone> {
+struct Node<'a, K: Clone + Ord, V: Clone + Debug> {
     node_type: NodeType<'a, K, V>,
     parent: *mut Node<'a, K, V>,
 }
@@ -22,7 +22,7 @@ struct LeafType<K: Clone + Ord> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct BranchType<'a, K: Clone + Ord, V: Clone> {
+struct BranchType<'a, K: Clone + Ord, V: Clone + Debug> {
     key: Option<&'a K>,
     left: *mut Node<'a, K, V>,
     right: *mut Node<'a, K, V>,
@@ -30,8 +30,8 @@ struct BranchType<'a, K: Clone + Ord, V: Clone> {
 
 impl<'a, K, V> Node<'a, K, V>
 where
-    K: Clone + Ord,
-    V: Clone + 'a,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug + 'a,
 {
     #[inline]
     fn get_key(&self) -> Option<&K> {
@@ -72,14 +72,14 @@ where
             if input_key.is_none() {
                 input_key = unsafe { (*branch.left).get_key() };
             }
-
             match branch.key {
                 Some(k) => match input_key {
                     Some(ik) => {
-                        if !ik.eq(k) {
-                            branch.key = Some(ik);
+                        if !(*k).eq(ik) {
+                            branch.key.replace(ik);
                             true
                         } else {
+                            branch.key.replace(ik);
                             false
                         }
                     }
@@ -91,7 +91,8 @@ where
 
                 None => match input_key {
                     Some(ik) => {
-                        branch.key = Some(ik);
+                        //branch.key = Some(ik);
+                        branch.key.replace(ik);
                         true
                     }
                     None => false,
@@ -109,8 +110,8 @@ fn connect_nodes<'a, K, V>(
     left: *mut Node<'a, K, V>,
     right: *mut Node<'a, K, V>,
 ) where
-    K: Ord + Clone,
-    V: Clone,
+    K: Ord + Clone + Debug,
+    V: Clone + Debug,
 {
     unsafe {
         (*parent).node_type = NodeType::Branch(BranchType {
@@ -131,8 +132,8 @@ fn make_tree<'a, K, V>(
     nodes: &mut Vec<Node<'a, K, V>>,
 ) -> *mut Node<'a, K, V>
 where
-    K: Ord + Clone,
-    V: Clone,
+    K: Ord + Clone + Debug,
+    V: Clone + Debug,
 {
     if height == 1 {
         nodes.push(Node {
@@ -166,7 +167,7 @@ where
 // https://erikdemaine.org/papers/CacheObliviousBTrees_SICOMP/paper.pdf
 // This is the cache oblivious version since by using this logic and if we put the tree nodes
 // into an array using the specific order, we may reduce the number of memory loading.
-pub struct BTreeMap<'a, K: Ord + Clone, V: Clone> {
+pub struct BTreeMap<'a, K: Ord + Clone + Debug + Debug, V: Clone + Debug> {
     height: usize,
     nodes: Vec<Node<'a, K, V>>,
     leaves: Vec<*mut Node<'a, K, V>>,
@@ -177,8 +178,8 @@ pub struct BTreeMap<'a, K: Ord + Clone, V: Clone> {
 
 impl<'a, K, V> Default for BTreeMap<'a, K, V>
 where
-    K: Ord + Clone,
-    V: Clone + 'a,
+    K: Ord + Clone + Debug + Debug,
+    V: Clone + Debug + 'a,
 {
     fn default() -> Self {
         Self::new()
@@ -187,8 +188,8 @@ where
 
 impl<'a, K, V> BTreeMap<'a, K, V>
 where
-    K: Ord + Clone,
-    V: Clone + 'a,
+    K: Ord + Clone + Debug + Debug,
+    V: Clone + Debug + 'a,
 {
     pub fn new() -> Self {
         let mut nodes = Vec::with_capacity(1);
@@ -228,7 +229,9 @@ where
             unsafe {
                 match (*self.leaves[index]).get_key() {
                     Some(k) => {
-                        if !k.eq(key) {
+                        if !(*k).eq(key) {
+                            //println!("{:?} {:?}", *key, *k);
+                            //println!("666");
                             return None;
                         }
                     }
@@ -319,6 +322,7 @@ where
     }
 
     fn rebuild(&mut self) {
+        //println!("Rebuilding");
         self.nodes = Vec::with_capacity(self.pma.data_len() << 1);
         self.leaves = Vec::with_capacity(self.pma.data_len());
         self.height = (self.pma.data_len().trailing_zeros() + 1) as usize;
@@ -329,30 +333,35 @@ where
     fn find_index(&self, key: &K) -> usize {
         let mut cur = self.root as *const Node<K, V>;
         let mut index = 0usize;
+        //println!("finding {:?}", key);
         unsafe {
             while let NodeType::Branch(branch) = &(*cur).node_type {
                 index <<= 1;
+                //println!("curr = {:p} {:?}", cur, *cur);
                 cur = match (*branch.left).get_key() {
                     Some(k) => {
                         if k.ge(key) {
+                            //println!("k = {:?}  go left index = {}", *k, index);
+
                             branch.left
                         } else {
                             index |= 1;
+                            //println!("k = {:?},  go right now index = {}", *k, index);
                             branch.right
                         }
                     }
                     None => {
                         index |= 1;
+                        //println!("None go right now index = {}", index);
                         branch.right
                     }
-                }
+                };
             }
         }
         assert!(cur == self.leaves[index]);
         unsafe {
             if let Some(k) = (*cur).get_key() {
                 if k.lt(key) {
-                    // This Key is the largest.
                     index += 1;
                 }
             }
@@ -362,37 +371,48 @@ where
 
     // Populated the changed leaves to root.
     fn populate_changes(&self, from: usize, to: usize) {
+        //println!("from = {}, to = {}", from, to);
         let key_values = self.pma.get_key_values();
-        let mut changed_nodes = Vec::with_capacity(self.nodes.len());
+        let mut changed_nodes: Vec<*mut Node<'a, K, V>> = Vec::with_capacity(self.nodes.len());
         for (i, key_value) in key_values.iter().enumerate().take(to).skip(from) {
             let node = self.leaves[i];
             unsafe {
-                (*node).set_leaf_key(key_value.as_ref().map(|kv| kv.0.clone()));
-                if !(*node).parent.is_null()
+                if (*node).set_leaf_key(key_value.as_ref().map(|kv| kv.0.clone()))
+                    && !(*node).parent.is_null()
                     && (changed_nodes.is_empty()
-                        || *changed_nodes.last().unwrap() as *const Node<K, V> != (*node).parent)
+                        || (changed_nodes.last().unwrap()) != &(*node).parent)
                 {
                     changed_nodes.push((*node).parent);
                 }
             }
         }
+        /*for node in changed_nodes.iter() {
+            println!("{:p}", *node);
+        }*/
 
         let mut i = 0;
         while i < changed_nodes.len() {
             unsafe {
+                /*println!(
+                    "out {:p} before change {:?}",
+                    changed_nodes[i],
+                    (*changed_nodes[i])
+                );*/
                 match (*changed_nodes[i]).node_type {
                     NodeType::Branch(_) => {
                         if (*changed_nodes[i]).set_branch_key()
                             && !(*changed_nodes[i]).parent.is_null()
-                            && *changed_nodes.last().unwrap() as *const Node<K, V>
-                                != (*changed_nodes[i]).parent
+                            && *changed_nodes.last().unwrap() != (*changed_nodes[i]).parent
                         {
-                            changed_nodes.push((*changed_nodes[i]).parent)
+                            changed_nodes.push((*changed_nodes[i]).parent);
+                            println!("put i = {}", i);
                         }
                     }
                     NodeType::Leaf(_) => panic!("Should not reach here"),
                 }
+                //println!("after change {:?}", (*changed_nodes[i]));
             }
+            // println!("i = {}", i);
             i += 1;
         }
     }
@@ -401,8 +421,9 @@ where
 #[cfg(test)]
 mod veb_tree {
     use super::{make_tree, BTreeMap, BranchType, LeafType, Node, NodeType};
+    use float_ord::FloatOrd;
     use rand::{seq::SliceRandom, thread_rng};
-    use std::ptr::null_mut;
+    use std::{fmt::Debug, ptr::null_mut};
 
     // Traverse the tree by layer.
     fn traverse<'a, K, V>(
@@ -413,8 +434,8 @@ mod veb_tree {
         positions: &mut Vec<Vec<usize>>,
         node_types: &mut Vec<Vec<&NodeType<'a, K, V>>>,
     ) where
-        K: Ord + Clone,
-        V: Clone,
+        K: Ord + Clone + Debug,
+        V: Clone + Debug,
     {
         if cur.is_null() {
             return;
@@ -574,6 +595,39 @@ mod veb_tree {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn test_set_leaf_key() {
+        let mut node = Node {
+            node_type: NodeType::<usize, usize>::Leaf(LeafType { key: Some(1) }),
+            parent: null_mut(),
+        };
+        node.set_leaf_key(Some(2));
+        assert_eq!(
+            node,
+            Node {
+                node_type: NodeType::<usize, usize>::Leaf(LeafType { key: Some(2) }),
+                parent: null_mut(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_cpcs() {
+        let mut tree = BTreeMap::<FloatOrd<f32>, usize>::new();
+        for i in 1000..1128 {
+            assert_eq!(tree.insert(FloatOrd(i as f32), i), None);
+            assert_eq!(tree.len(), i - 999);
+            //println!("insert i = {}", i);
+        }
+
+        for i in 1000..1128 {
+            tree.remove(&FloatOrd(i as f32));
+            assert_eq!(tree.len(), 127);
+            assert_eq!(tree.insert(FloatOrd((i + 128) as f32), i + 128), None);
+            assert_eq!(tree.len(), 128);
+        }
     }
 
     #[test]
