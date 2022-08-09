@@ -367,7 +367,7 @@ where
 
 #[cfg(test)]
 mod btree_map {
-    use crate::cache_oblivious::{compute_node_id_internal, BTreeMapgi};
+    use crate::cache_oblivious::{compute_node_id_internal, BTreeMap};
     use float_ord::FloatOrd;
     use rand::{seq::SliceRandom, thread_rng};
 
